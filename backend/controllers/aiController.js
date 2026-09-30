@@ -10,6 +10,7 @@ export const chatWithAI = async (req, res, next) => {
   try {
     const { message, history = [] } = req.body;
 
+    // Check message
     if (!message?.trim()) {
       return res.status(400).json({
         success: false,
@@ -79,64 +80,137 @@ IMPORTANT RULES:
 Return JSON only.
 `;
 
-    const response = await ai.models.generateContent({
-      model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
-      contents: prompt,
+    // =====================================================
+    // GEMINI REQUEST WITH RETRY
+    // =====================================================
+    const generateAIResponse = async () => {
+      return await ai.models.generateContent({
+        model: process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
+        contents: prompt,
 
-      config: {
-        responseMimeType: "application/json",
+        config: {
+          responseMimeType: "application/json",
 
-        responseSchema: {
-          type: "object",
-          properties: {
-            reply: {
-              type: "string",
+          responseSchema: {
+            type: "object",
+            properties: {
+              reply: {
+                type: "string",
+              },
+              action: {
+                type: "string",
+                enum: ["chat", "booking"],
+              },
+              serviceName: {
+                type: "string",
+              },
+              date: {
+                type: "string",
+              },
+              time: {
+                type: "string",
+              },
+              address: {
+                type: "string",
+              },
+              bookingConfirmed: {
+                type: "boolean",
+              },
             },
-            action: {
-              type: "string",
-              enum: ["chat", "booking"],
-            },
-            serviceName: {
-              type: "string",
-            },
-            date: {
-              type: "string",
-            },
-            time: {
-              type: "string",
-            },
-            address: {
-              type: "string",
-            },
-            bookingConfirmed: {
-              type: "boolean",
-            },
+            required: [
+              "reply",
+              "action",
+              "serviceName",
+              "date",
+              "time",
+              "address",
+              "bookingConfirmed",
+            ],
           },
-          required: [
-            "reply",
-            "action",
-            "serviceName",
-            "date",
-            "time",
-            "address",
-            "bookingConfirmed",
-          ],
         },
-      },
-    });
+      });
+    };
 
+    let response;
+
+    // =====================================================
+    // FIRST ATTEMPT
+    // =====================================================
+    try {
+      response = await generateAIResponse();
+    } catch (error) {
+      console.error("First AI attempt failed:", {
+        message: error?.message,
+        status: error?.status,
+        code: error?.code,
+        details: error?.details,
+      });
+
+      // =====================================================
+      // RETRY FOR TEMPORARY 503 / 429 ERRORS
+      // =====================================================
+      const status = error?.status || error?.code;
+
+      if (status === 503 || status === 429) {
+        console.log("Retrying Gemini request after temporary error...");
+
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+
+        try {
+          response = await generateAIResponse();
+        } catch (retryError) {
+          console.error("Second AI attempt failed:", {
+            message: retryError?.message,
+            status: retryError?.status,
+            code: retryError?.code,
+            details: retryError?.details,
+          });
+
+          const retryStatus =
+            retryError?.status || retryError?.code;
+
+          if (retryStatus === 503) {
+            return res.status(503).json({
+              success: false,
+              message:
+                "AI service is temporarily unavailable. Please try again in a moment.",
+            });
+          }
+
+          if (retryStatus === 429) {
+            return res.status(429).json({
+              success: false,
+              message:
+                "AI service limit has been reached. Please try again later.",
+            });
+          }
+
+          return next(retryError);
+        }
+      } else {
+        return next(error);
+      }
+    }
+
+    // =====================================================
+    // PARSE AI RESPONSE
+    // =====================================================
     let result;
 
     try {
       result = JSON.parse(response.text);
     } catch (error) {
+      console.error("AI JSON Parse Error:", error);
+
       return res.status(500).json({
         success: false,
         message: "AI returned an invalid response.",
       });
     }
 
-    // Normal chat
+    // =====================================================
+    // NORMAL CHAT
+    // =====================================================
     if (result.action !== "booking") {
       return res.json({
         success: true,
@@ -145,12 +219,17 @@ Return JSON only.
       });
     }
 
+    // =====================================================
+    // GET BOOKING DETAILS
+    // =====================================================
     const serviceName = result.serviceName?.trim();
     const date = result.date?.trim();
     const time = result.time?.trim();
     const address = result.address?.trim();
 
-    // Missing booking details
+    // =====================================================
+    // MISSING BOOKING DETAILS
+    // =====================================================
     if (!serviceName || !date || !time || !address) {
       return res.json({
         success: true,
@@ -159,7 +238,9 @@ Return JSON only.
       });
     }
 
-    // User has not confirmed yet
+    // =====================================================
+    // USER HAS NOT CONFIRMED
+    // =====================================================
     if (!result.bookingConfirmed) {
       return res.json({
         success: true,
@@ -168,11 +249,14 @@ Return JSON only.
       });
     }
 
-    // Find the real service
+    // =====================================================
+    // FIND REAL SERVICE
+    // =====================================================
     const normalizedServiceName = serviceName.toLowerCase();
 
     const service = services.find(
-      (item) => item.name.toLowerCase() === normalizedServiceName
+      (item) =>
+        item.name.toLowerCase() === normalizedServiceName
     );
 
     if (!service) {
@@ -184,7 +268,9 @@ Return JSON only.
       });
     }
 
-    // Create actual booking in MongoDB
+    // =====================================================
+    // CREATE ACTUAL BOOKING
+    // =====================================================
     const booking = await bookingModel.create({
       user: req.user._id,
       service: service._id,
@@ -194,11 +280,19 @@ Return JSON only.
       status: "Pending",
     });
 
-    // Populate service details
+    // =====================================================
+    // POPULATE BOOKING DETAILS
+    // =====================================================
     const populatedBooking = await bookingModel
       .findById(booking._id)
-      .populate("service", "name price image category");
+      .populate(
+        "service",
+        "name price image category"
+      );
 
+    // =====================================================
+    // SUCCESS RESPONSE
+    // =====================================================
     return res.status(201).json({
       success: true,
       reply: `Perfect! Your ${service.name} booking has been created successfully.`,
@@ -206,20 +300,32 @@ Return JSON only.
       booking: populatedBooking,
     });
   } catch (error) {
-    console.error("AI Error:", error);
+    console.error("AI Error:", {
+      message: error?.message,
+      status: error?.status,
+      code: error?.code,
+      details: error?.details,
+    });
 
+    // =====================================================
+    // GEMINI 503
+    // =====================================================
     if (error?.status === 503 || error?.code === 503) {
       return res.status(503).json({
         success: false,
         message:
-          "AI is temporarily busy. Please try again in a few seconds.",
+          "AI service is temporarily unavailable. Please try again in a moment.",
       });
     }
 
+    // =====================================================
+    // GEMINI 429
+    // =====================================================
     if (error?.status === 429 || error?.code === 429) {
       return res.status(429).json({
         success: false,
-        message: "AI service limit has been reached. Please try again later.",
+        message:
+          "AI service limit has been reached. Please try again later.",
       });
     }
 
