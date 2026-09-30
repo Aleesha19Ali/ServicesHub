@@ -43,7 +43,6 @@ export const authMiddleware = async (req, res, next) => {
 
     // Continue to the next middleware/controller
     next();
-
   } catch (error) {
     // JWT invalid or expired
     return res.status(401).json({
@@ -53,12 +52,10 @@ export const authMiddleware = async (req, res, next) => {
   }
 };
 
-
 // =====================================================
 // ADMIN ONLY MIDDLEWARE
 // =====================================================
 export const adminOnly = (req, res, next) => {
-
   // Check whether logged-in user's role is admin
   if (req.user?.role !== "admin") {
     return res.status(403).json({
