@@ -8,7 +8,7 @@ export const services = [
     category: "Cleaning",
     price: 3000,
     rating: 4.8,
-    image: "https://images.unsplash.com/photo-1581578731548-c64695cc6952?auto=format&fit=crop&w=800&q=80",
+    image: "https://plus.unsplash.com/premium_photo-1667520405114-47d3677f966e?q=80&w=1170&auto=format&fit=crop&ixlib=rb-4.1.0&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D",
     description:
       "Professional home cleaning service for apartments and houses. Our team handles deep cleaning and regular maintenance.",
     includes: [
